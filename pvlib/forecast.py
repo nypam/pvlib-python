@@ -729,21 +729,14 @@ class GFS(ForecastModel):
         self.variables = {
             'temp_air': 'Temperature_surface',
             'wind_speed_gust': 'Wind_speed_gust_surface',
-            'wind_speed_u': 'u-component_of_wind_isobaric',
-            'wind_speed_v': 'v-component_of_wind_isobaric',
             'total_clouds':
-                'Total_cloud_cover_entire_atmosphere_Mixed_intervals_Average',
+                'Total_cloud_cover_entire_atmosphere',
             'low_clouds':
-                'Low_cloud_cover_low_cloud_Mixed_intervals_Average',
+                'Low_cloud_cover_low_cloud',
             'mid_clouds':
-                'Medium_cloud_cover_middle_cloud_Mixed_intervals_Average',
+                'Medium_cloud_cover_middle_cloud',
             'high_clouds':
-                'High_cloud_cover_high_cloud_Mixed_intervals_Average',
-            'boundary_clouds': ('Total_cloud_cover_boundary_layer_cloud_'
-                                'Mixed_intervals_Average'),
-            'convect_clouds': 'Total_cloud_cover_convective_cloud',
-            'ghi_raw': ('Downward_Short-Wave_Radiation_Flux_'
-                        'surface_Mixed_intervals_Average')}
+                'High_cloud_cover_high_cloud'}
 
         self.output_variables = [
             'temp_air',
@@ -756,8 +749,7 @@ class GFS(ForecastModel):
             'mid_clouds',
             'high_clouds']
 
-        super().__init__(model_type, model, set_type,
-                                  vert_level=100000)
+        super().__init__(model_type, model, set_type)
 
     def process_data(self, data, cloud_cover='total_clouds', **kwargs):
         """
@@ -778,7 +770,7 @@ class GFS(ForecastModel):
         """
         data = super().process_data(data, **kwargs)
         data['temp_air'] = self.kelvin_to_celsius(data['temp_air'])
-        data['wind_speed'] = self.uv_to_speed(data)
+        data = data.rename(columns={'wind_speed_gust': 'wind_speed'})
         irrads = self.cloud_cover_to_irradiance(data[cloud_cover], **kwargs)
         data = data.join(irrads, how='outer')
         return data[self.output_variables]
