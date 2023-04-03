@@ -739,21 +739,14 @@ class GFS(ForecastModel):
         self.variables = {
             'temp_air': 'Temperature_surface',
             'wind_speed_gust': 'Wind_speed_gust_surface',
-            'wind_speed_u': 'u-component_of_wind_isobaric',
-            'wind_speed_v': 'v-component_of_wind_isobaric',
             'total_clouds':
-                'Total_cloud_cover_entire_atmosphere_Mixed_intervals_Average',
+                'Total_cloud_cover_entire_atmosphere',
             'low_clouds':
-                'Low_cloud_cover_low_cloud_Mixed_intervals_Average',
+                'Low_cloud_cover_low_cloud',
             'mid_clouds':
-                'Medium_cloud_cover_middle_cloud_Mixed_intervals_Average',
+                'Medium_cloud_cover_middle_cloud',
             'high_clouds':
-                'High_cloud_cover_high_cloud_Mixed_intervals_Average',
-            'boundary_clouds': ('Total_cloud_cover_boundary_layer_cloud_'
-                                'Mixed_intervals_Average'),
-            'convect_clouds': 'Total_cloud_cover_convective_cloud',
-            'ghi_raw': ('Downward_Short-Wave_Radiation_Flux_'
-                        'surface_Mixed_intervals_Average')}
+                'High_cloud_cover_high_cloud'}
 
         self.output_variables = [
             'temp_air',
@@ -766,8 +759,7 @@ class GFS(ForecastModel):
             'mid_clouds',
             'high_clouds']
 
-        super().__init__(model_type, model, set_type,
-                                  vert_level=100000)
+        super().__init__(model_type, model, set_type)
 
     def process_data(self, data, cloud_cover='total_clouds', **kwargs):
         """
@@ -788,7 +780,7 @@ class GFS(ForecastModel):
         """
         data = super().process_data(data, **kwargs)
         data['temp_air'] = self.kelvin_to_celsius(data['temp_air'])
-        data['wind_speed'] = self.uv_to_speed(data)
+        data = data.rename(columns={'wind_speed_gust': 'wind_speed'})
         irrads = self.cloud_cover_to_irradiance(data[cloud_cover], **kwargs)
         data = data.join(irrads, how='outer')
         return data[self.output_variables]
@@ -997,20 +989,22 @@ class HRRR(ForecastModel):
         and the model specific variables.
     """
 
-    def __init__(self, set_type='best'):
+    def __init__(self, set_type='latest'):
         model_type = 'Forecast Model Data'
         model = 'HRRR CONUS 2.5km Forecasts'
 
         self.variables = {
-            'temp_air': 'Temperature_height_above_ground',
             'pressure': 'Pressure_surface',
-            'wind_speed_gust': 'Wind_speed_gust_surface',
-            'wind_speed_u': 'u-component_of_wind_height_above_ground',
-            'wind_speed_v': 'v-component_of_wind_height_above_ground',
             'total_clouds': 'Total_cloud_cover_entire_atmosphere',
             'low_clouds': 'Low_cloud_cover_low_cloud',
             'mid_clouds': 'Medium_cloud_cover_middle_cloud',
             'high_clouds': 'High_cloud_cover_high_cloud'}
+
+        self.isobaric_variables = {
+            'temp_air': 'Temperature_isobaric',
+            'wind_speed_u': 'u-component_of_wind_isobaric',
+            'wind_speed_v': 'v-component_of_wind_isobaric'
+        }
 
         self.output_variables = [
             'temp_air',
@@ -1023,7 +1017,78 @@ class HRRR(ForecastModel):
             'mid_clouds',
             'high_clouds', ]
 
-        super().__init__(model_type, model, set_type)
+        self.isobaric_netcdf_data = None
+        self.isobaric_data = None
+        self.query_isobaric_variables = None
+
+        super().__init__(model_type, model, set_type, vert_level=100000.0)
+
+    def get_data(self, latitude, longitude, start, end,
+                 vert_level=None, query_variables=None,
+                 close_netcdf_data=True, **kwargs):
+
+        """
+        Submits a query to the UNIDATA servers using Siphon NCSS and
+        converts the netcdf data to a pandas DataFrame.  Customizations
+        for HRRR since temp and wind speed are not only fetchable with
+        a second query
+
+        Parameters
+        ----------
+        latitude: float
+            The latitude value.
+        longitude: float
+            The longitude value.
+        start: datetime or timestamp
+            The start time.
+        end: datetime or timestamp
+            The end time.
+        vert_level: None, float or integer, default None
+            Vertical altitude of interest.
+        query_variables: None or list, default None
+            If None, uses self.variables.
+        close_netcdf_data: bool, default True
+            Controls if the temporary netcdf data file should be closed.
+            Set to False to access the raw data.
+        **kwargs:
+            Additional keyword arguments are silently ignored.
+
+        Returns
+        -------
+        forecast_data : DataFrame
+            column names are the weather model's variable names.
+        """
+
+        # Determine if query.var exists.  If it does, clear the value held by the set.
+        try:
+            self.query.var
+        except AttributeError:
+            pass
+        else:
+            self.query.var.clear()
+
+        standard_data = super().get_data(latitude, longitude, start, end,
+                                         vert_level=None, query_variables=None,
+                                         close_netcdf_data=True, **kwargs)
+
+        self.query_isobaric_variables = list(self.isobaric_variables.values())
+        self.query.var.clear()
+        self.query.variables(*self.query_isobaric_variables)
+        self.query.accept(self.data_format)
+
+        self.isobaric_netcdf_data = self.ncss.get_data(self.query)
+
+        # might be better to go to xarray here so that we can handle
+        # higher dimensional data for more advanced applications
+        self.isobaric_data = self._netcdf2pandas(self.isobaric_netcdf_data, self.query_isobaric_variables,
+                                                 self.start, self.end)
+
+        if close_netcdf_data:
+            self.netcdf_data.close()
+
+        self.data = self.isobaric_data.join(standard_data, how='left')
+
+        return self.data
 
     def process_data(self, data, cloud_cover='total_clouds', **kwargs):
         """
@@ -1043,11 +1108,7 @@ class HRRR(ForecastModel):
             Processed forecast data.
         """
         data = super().process_data(data, **kwargs)
-        wind_mapping = {
-            'wind_speed_u': 'u-component_of_wind_height_above_ground_0',
-            'wind_speed_v': 'v-component_of_wind_height_above_ground_0',
-        }
-        data = self.rename(data, variables=wind_mapping)
+        data = self.rename(data, variables=self.isobaric_variables)
         data['temp_air'] = self.kelvin_to_celsius(data['temp_air'])
         data['wind_speed'] = self.uv_to_speed(data)
         irrads = self.cloud_cover_to_irradiance(data[cloud_cover], **kwargs)
